@@ -62,7 +62,20 @@ class MedicationResolveItem(BaseModel):
 
 class ResolutionRequest(BaseModel):
     medications: List[MedicationResolveItem]
+@app.get("/")
+async def root():
+    return {
+        "application": "Clinical Discharge Summary Pipeline",
+        "status": "Healthy",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
 
+@app.get("/health")
+async def health():
+    return {
+        "status": "UP"
+    }
 
 @app.on_event("startup")
 async def startup_event():
