@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0B0F14;
+  --foreground: #F8FAFC;
+  --card: #111827;
+  --primary-accent: #14B8A6;
+  --secondary-text: #94A3B8;
+  --warning: #F59E0B;
+  --error: #EF4444;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background) !important;
+  color: var(--foreground) !important;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Enforce dark dropdowns, selects, inputs, and form controls across Chrome, Edge, and Firefox */
+select, option, input, textarea, button {
+  background-color: #111827 !important;
+  color: #F8FAFC !important;
+  border-color: #1E293B !important;
+}
+
+select:focus, input:focus, textarea:focus {
+  border-color: #14B8A6 !important;
+  outline: none;
+}
+
+select option {
+  background-color: #111827 !important;
+  color: #F8FAFC !important;
+}
+
+/* Scrollbar styles to match the dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0B0F14;
+}
+::-webkit-scrollbar-thumb {
+  background: #1E293B;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #14B8A6;
+}

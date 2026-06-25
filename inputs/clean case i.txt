@@ -1,0 +1,19 @@
+Patient: Robert Harrison
+
+45-year-old male admitted with fever (102°F), productive cough, and shortness of breath for 4 days.
+
+Chest X-ray demonstrates right lower lobe consolidation.
+
+Assessment:
+Community Acquired Pneumonia.
+
+Treatment:
+Started Ceftriaxone 1g IV once daily.
+Paracetamol 650mg PRN for fever.
+
+Plan:
+Monitor oxygen saturation and clinical response.
+
+Recorded by:
+Dr. Michael Reed
+Resident Medical Officer

@@ -1,0 +1,13 @@
+Patient: Bob
+
+Presented with chest tightness and exertional chest pain.
+
+Assessment:
+Unstable Angina.
+
+Medication:
+Aspirin 75mg once daily initiated.
+
+Recorded by:
+Dr. James Mercer
+Resident Medical Officer

@@ -1,0 +1,30 @@
+Patient: Jerry
+Age: 58 years
+Gender: Male
+
+Admission Date: 21/06/2026
+
+Admission Mode: Emergency Department
+
+Chief Complaint:
+Painful diabetic foot ulcer over right foot for 7 days.
+
+Past Medical History:
+Type 2 Diabetes Mellitus for 12 years.
+
+Assessment:
+Diabetic foot ulcer.
+
+Current Medication:
+Metformin 500mg twice daily.
+
+Treatment:
+Wound cleaning and dressing performed.
+
+Plan:
+Continue Metformin 500mg twice daily.
+
+Recorded by:
+Dr. David Ross
+Resident Medical Officer
+Date: 21/06/2026 10:00 AM
