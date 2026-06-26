@@ -1,0 +1,14 @@
+Patient: Emily Carter
+Age: 54 years
+
+Patient presented with burning micturition, urinary frequency, fever (101.4°F), and suprapubic pain for two days.
+
+Urinalysis demonstrated significant pyuria and positive nitrites.
+
+Clinical diagnosis: Acute uncomplicated urinary tract infection.
+
+Started on Ceftriaxone 1 g IV once daily.
+
+Patient admitted for intravenous antibiotics and hydration.
+
+Discharging Physician: Dr. David Ross.

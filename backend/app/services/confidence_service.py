@@ -10,6 +10,7 @@ _ROLE_AUTHORITY_MAP = {
     AuthorRole.CONSULTANT:  "MEDIUM",
     AuthorRole.RESIDENT:    "MEDIUM",
     AuthorRole.WARD_NURSE:  "LOW",
+    AuthorRole.UNKNOWN_CLINICIAN: "LOW",
 }
 
 

@@ -4,7 +4,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from dotenv import load_dotenv
 import ssl
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Production-grade asynchronous engine setup using asyncpg
 DATABASE_URL = os.getenv("DATABASE_URL")

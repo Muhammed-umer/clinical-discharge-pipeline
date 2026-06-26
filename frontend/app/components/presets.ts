@@ -117,6 +117,29 @@ export interface StayDetails {
       notes: string[];
       grounding_metrics?: GroundingMetrics;
       warnings?: ClinicalWarning[];
+      historical_medications?: Array<{
+        name: string;
+        dosage: string;
+        frequency: string;
+        duration: string;
+        confidence?: { score: number; level: string };
+        evidence: Evidence[];
+        claim_id?: string;
+      }>;
+      merged_duplicates?: Array<{
+        name: string;
+        dosage: string;
+        frequency: string;
+        duration: string;
+        confidence?: { score: number; level: string };
+        evidence: Evidence[];
+        claim_id?: string;
+      }>;
+      clinical_audit?: {
+        original_recommendations: Array<{ role: string; value: string }>;
+        physician_decision: string;
+        reason: string;
+      };
     };
   } | null;
   is_reconciled: boolean;
@@ -212,31 +235,34 @@ export const SAMPLE_CASES: PresetCase[] = [
     ]
   },
   {
-    id: "CASE-CARDIOLOGY-117",
-    name: "Eleanor Vance",
-    title: "Sample Case 3: Cardiology (Aspirin Discrepancy)",
-    desc: "Flags Aspirin discrepancy (75mg vs 150mg) between Specialist recommendation and Nurse discharge instructions.",
+    id: "CASE-STROKE-781",
+    name: "Margaret Wilson",
+    title: "Sample Case 3: Stroke (Missing Information)",
+    desc: "Demonstrates safe handling of incomplete documentation without hallucinating missing clinical information.",
     notes: [
       {
-        filename: "admission_notes.txt",
+        filename: "resident_admission_note.txt",
         docType: "Resident Note",
         authorRole: "RESIDENT",
-        content: "Patient Eleanor Vance admitted with chest tightness. Diagnosed with unstable Angina. Started Aspirin 75mg daily. Discharging Physician: Dr. James Mercer.",
-        recorded_at: "2026-06-21T09:00:00"
+        content:
+          "Patient Margaret Wilson admitted with sudden onset left-sided weakness and slurred speech. CT Brain confirmed acute ischemic stroke. Started Aspirin 150mg daily.",
+        recorded_at: "2026-06-21T08:30:00"
       },
       {
-        filename: "cardiologist_evaluation.txt",
+        filename: "neurology_consult.txt",
         docType: "Consultant Note",
         authorRole: "CONSULTANT",
-        content: "Cardiology consult: EKG shows mild ischemia. Due to high thrombotic risk, recommend adjusting Aspirin to 150mg daily. Add Metoprolol 25mg BID.",
-        recorded_at: "2026-06-22T13:45:00"
+        content:
+          "Neurology review: Motor power improving. Continue Aspirin 150mg daily. Begin physiotherapy. Patient clinically stable.",
+        recorded_at: "2026-06-22T11:20:00"
       },
       {
-        filename: "ward_nurse_discharge_checklist.txt",
-        docType: "Nurse Note",
+        filename: "discharge_progress_note.txt",
+        docType: "Ward Progress Note",
         authorRole: "WARD_NURSE",
-        content: "Discharge instructions: Continue Aspirin 75mg daily and Metoprolol 25mg BID. Follow up in outpatient clinic in 7 days.",
-        recorded_at: "2026-06-23T10:30:00"
+        content:
+          "Patient discharged home with family after physiotherapy review. Education regarding medication adherence completed.",
+        recorded_at: "2026-06-23T15:40:00"
       }
     ]
   }

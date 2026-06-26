@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Dict
 from app.models.schemas import NABHDischargeSummaryExtraction, MissingFieldSchema
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,26 @@ class ClinicalSchemaValidator:
             # Parse JSON manually
             parsed_dict = json.loads(clean_text)
 
+            # Normalize common LLM key naming variations before validation
+            if isinstance(parsed_dict, dict):
+                # 1. Normalize symptoms list (ObservationSchema expects "observation")
+                if "symptoms" in parsed_dict and isinstance(parsed_dict["symptoms"], list):
+                    for item in parsed_dict["symptoms"]:
+                        if isinstance(item, dict):
+                            for alt_key in ["diagnosis", "symptom", "finding", "name"]:
+                                if alt_key in item and "observation" not in item:
+                                    item["observation"] = item[alt_key]
+                                    break
+                                    
+                # 2. Normalize diagnoses list (DiagnosisSchema expects "diagnosis")
+                if "diagnoses" in parsed_dict and isinstance(parsed_dict["diagnoses"], list):
+                    for item in parsed_dict["diagnoses"]:
+                        if isinstance(item, dict):
+                            for alt_key in ["observation", "symptom", "name"]:
+                                if alt_key in item and "diagnosis" not in item:
+                                    item["diagnosis"] = item[alt_key]
+                                    break
+
             # Validate using model_validate after Gemini returns
             return NABHDischargeSummaryExtraction.model_validate(parsed_dict)
         except json.JSONDecodeError as jde:
@@ -37,6 +58,58 @@ class ClinicalSchemaValidator:
         except Exception as e:
             logger.error(f"Response failed schema validation: {str(e)}")
             raise ClinicalValidationError(f"Gemini JSON response failed schema validation constraints: {str(e)}") from e
+
+    def parse_batch_response(self, response_text: str) -> Dict[str, NABHDischargeSummaryExtraction]:
+        """
+        Validates the Gemini JSON response structure for batch extractions.
+        """
+        try:
+            clean_text = response_text.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text[7:]
+            if clean_text.endswith("```"):
+                clean_text = clean_text[:-3]
+            clean_text = clean_text.strip()
+
+            parsed_dict = json.loads(clean_text)
+
+            if "notes_extractions" not in parsed_dict:
+                raise ClinicalValidationError("Missing 'notes_extractions' key in batch response.")
+
+            extractions_dict = parsed_dict["notes_extractions"]
+            result = {}
+
+            for role, ext_dict in extractions_dict.items():
+                if isinstance(ext_dict, dict):
+                    # 1. Normalize symptoms list (ObservationSchema expects "observation")
+                    if "symptoms" in ext_dict and isinstance(ext_dict["symptoms"], list):
+                        for item in ext_dict["symptoms"]:
+                            if isinstance(item, dict):
+                                for alt_key in ["diagnosis", "symptom", "finding", "name"]:
+                                    if alt_key in item and "observation" not in item:
+                                        item["observation"] = item[alt_key]
+                                        break
+                                        
+                    # 2. Normalize diagnoses list (DiagnosisSchema expects "diagnosis")
+                    if "diagnoses" in ext_dict and isinstance(ext_dict["diagnoses"], list):
+                        for item in ext_dict["diagnoses"]:
+                            if isinstance(item, dict):
+                                for alt_key in ["observation", "symptom", "name"]:
+                                    if alt_key in item and "diagnosis" not in item:
+                                        item["diagnosis"] = item[alt_key]
+                                        break
+
+                validated = NABHDischargeSummaryExtraction.model_validate(ext_dict)
+                result[role.upper()] = validated
+
+            return result
+        except json.JSONDecodeError as jde:
+            logger.error(f"Raw batch response is not decodable JSON. Raw text: {response_text}")
+            raise ClinicalValidationError(f"Gemini returned invalid JSON structure: {str(jde)}") from jde
+        except Exception as e:
+            logger.error(f"Batch response failed schema validation: {str(e)}")
+            raise ClinicalValidationError(f"Gemini JSON batch response failed schema validation constraints: {str(e)}") from e
+
 
     # Minimum number of characters required in extracted_text to be considered
     # a valid clinical citation. Single words or whitespace strings are not

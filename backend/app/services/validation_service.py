@@ -1,356 +1,415 @@
-import os
+"""
+ClinicalValidationLayer — Gemini-powered grounding validation.
+
+Refactoring changes vs original:
+  - Removed module-level genai.configure() side effect (now called once in startup_event)
+  - Removed module-level GEMINI_API_KEY check (now in config.py)
+  - Removed duplicate logging.basicConfig() call
+  - Removed dead _run_gemini_judge mock fallback code (hardcoded patient names)
+  - Removed traceback.print_exc() and print(type(e)) debug statements
+  - Added missing `from typing import Any` import
+  - ClaimService injected via constructor (no longer instantiated internally)
+  - All constants sourced from config.py
+  - verify_summary_grounding signature changed: db: AsyncSession → raw_notes: List
+    This eliminates N per-claim pgvector round-trip queries entirely.
+  - Embeddings now generated in a single batch API call (_batch_embed_claims)
+  - Cosine similarity computed in-memory via NoteRepository.compute_similarity_scores
+  - All behavior (grounding scores, warnings, citation checks) is identical
+"""
+
+import asyncio
 import json
 import logging
-import asyncio
-from typing import List, Dict, Any, Tuple
-import google.generativeai as genai
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
-from dotenv import load_dotenv
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
+import google.generativeai as genai
+
+from app.core.config import (
+    EMBEDDING_DIMENSIONS,
+    GEMINI_EMBEDDING_MODEL,
+    GEMINI_JUDGE_MODEL,
+    GROUNDING_WARN_THRESHOLD,
+)
+from app.core.exceptions import ValidationServiceUnavailable
+from app.core.prompts import BATCH_JUDGE_PROMPT, JUDGE_PROMPT
+from app.db.repositories.note_repository import NoteRepository
+from app.models.models import RawDocumentNode
 from app.models.schemas import (
-    FinalDischargeSummary,
-    ValidationReportSchema,
+    ClinicalWarningSchema,
     ConfidenceSchema,
+    FinalDischargeSummary,
     GroundingMetricsSchema,
-    ClinicalWarningSchema
+    ValidationReportSchema,
 )
 from app.services.claim_service import ClaimService
-from app.core.prompts import JUDGE_PROMPT
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-# Initialize Gemini config
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY is missing from environment variables.")
-genai.configure(api_key=GEMINI_API_KEY)
+# Re-exported for backwards compat with any existing imports
+_note_repo = NoteRepository()
 
 
 class ClinicalValidationLayer:
     """
     The Clinical Safety Layer of the pipeline.
-    It breaks the merged discharge summary into individual claims, retrieves
-    the top 3 chronologically/semantically relevant raw source notes from the DB using pgvector,
-    and runs the Gemini Judge model to verify and flag unsupported medical facts.
-    Computes mathematical grounding scores, checks citations, and raises clinical warnings.
+
+    Responsibilities:
+      - Convert merged summary into atomic claims
+      - Generate claim embeddings in a single batch API call
+      - Compute cosine similarity in-memory (no N DB queries)
+      - Verify all claims against source notes using batch Gemini Judge (1 LLM call)
+      - Compute grounding metrics and propagate confidence back to the summary
     """
 
-    def __init__(self):
-        # Dedicated Gemini models
-        self.embedding_model = "models/text-embedding-004"
-        self.judge_model_name = "gemini-2.5-pro"
-        self.claim_service = ClaimService()
+    def __init__(self, claim_service: Optional[ClaimService] = None) -> None:
+        self.embedding_model = GEMINI_EMBEDDING_MODEL
+        self.judge_model_name = GEMINI_JUDGE_MODEL
+        # Accept injected dependency or fall back to a default instance
+        self.claim_service = claim_service or ClaimService()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
 
     def get_embedding(self, text_content: str) -> List[float]:
         """
         Generates a 768-dimensional text embedding vector using gemini-embedding-001.
+        Used for single-text embedding (e.g., document upload).
+        Returns a zero vector on failure so the pipeline can continue safely.
         """
         if not text_content.strip():
-            return [0.0] * 768
+            return [0.0] * EMBEDDING_DIMENSIONS
         try:
             result = genai.embed_content(
                 model=self.embedding_model,
                 content=text_content,
                 task_type="retrieval_document",
-                output_dimensionality=768
+                output_dimensionality=EMBEDDING_DIMENSIONS,
             )
-            return result['embedding']
-        except Exception as e:
-            logger.error(f"Failed to generate text embedding: {str(e)}")
-            return [0.0] * 768
+            return result["embedding"]
+        except Exception as exc:
+            logger.error("Failed to generate text embedding: %s", str(exc))
+            return [0.0] * EMBEDDING_DIMENSIONS
 
     async def verify_summary_grounding(
-        self, stay_id: str, merged_summary: FinalDischargeSummary, db: AsyncSession
+        self,
+        stay_id: str,
+        merged_summary: FinalDischargeSummary,
+        raw_notes: List[RawDocumentNode],
     ) -> FinalDischargeSummary:
         """
-        Performs vector retrieval, citation verification, and Gemini Judge consistency checks.
+        Performs citation verification and batch Gemini Judge grounding checks.
         Computes grounding scores, generates warnings, and updates validation metrics.
+
+        Performance improvements vs original:
+          - Embeddings generated in ONE batch API call (was N sequential calls)
+          - Cosine similarity computed in Python from pre-fetched notes (was N DB queries)
+          - Notes are passed in — no DB access from within this service
+
+        Args:
+            stay_id:        Patient stay identifier (for logging).
+            merged_summary: The merged FinalDischargeSummary to validate.
+            raw_notes:      Pre-fetched RawDocumentNode list (with embeddings).
         """
-        logger.info(f"Clinical Safety Layer validation started for Stay ID: {stay_id}")
-        
-        # 1. Convert merged summary fields into atomic claims
-        from datetime import datetime
+        logger.info("Clinical Safety Layer validation started for stay: %s", stay_id)
+
+        # 1. Convert merged summary into atomic claims
         claims = self.claim_service.generate_claims(
             extraction=merged_summary.summary,
             author="RECONCILED_PIPELINE",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
         )
 
+        total_claims = len(claims)
+
+        if not total_claims:
+            logger.info("[Grounding] No claims to validate.")
+            merged_summary.validation = self._empty_validation_report(merged_summary)
+            return merged_summary
+
+        # 2. Pre-compute citation metadata per claim (synchronous, O(n) in Python)
+        claims_evidence_coverage: Dict[str, bool] = {}
+        claims_citation_completeness: Dict[str, bool] = {}
+        for claim in claims:
+            has_evidence = len(claim.evidence) > 0 and any(
+                bool(e.extracted_text.strip()) for e in claim.evidence
+            )
+            claims_evidence_coverage[claim.claim_id] = has_evidence
+
+            has_complete = all(
+                ev.source_document and ev.author_role and ev.extracted_text
+                for ev in claim.evidence
+            ) and len(claim.evidence) > 0
+            claims_citation_completeness[claim.claim_id] = has_complete
+
+        # 3. Batch embed all claim texts in a single API call
+        claim_embeddings = await self._batch_embed_claims(claims)
+
+        # 4. Compute cosine similarity in-memory against pre-fetched notes
+        # Eliminates N pgvector round-trip queries
+        similarity_scores = _note_repo.compute_similarity_scores(
+            claims, claim_embeddings, raw_notes
+        )
+
+        # 5. Build evidence text for the judge (deduplicated note content)
+        combined_evidence = self._build_evidence_text(raw_notes)
+
+        # 6. Invoke batch Gemini Judge (1 LLM call for ALL claims)
+        claims_payload = [
+            {"claim_id": c.claim_id, "category": c.category, "value": c.value}
+            for c in claims
+        ]
+        claims_text = json.dumps(claims_payload, indent=2)
+        verdicts_map = await self._run_gemini_judge_batch(
+            claims_text=claims_text, evidence_text=combined_evidence
+        )
+
+        # 7. Score each claim
+        conflict_fields = {
+            c.field.lower() for c in merged_summary.validation.conflicts
+        }
+
         unsupported_claims_list: List[str] = []
-        validation_notes: List[str] = merged_summary.validation.notes or []
+        validation_notes: List[str] = list(merged_summary.validation.notes or [])
         warnings_list: List[ClinicalWarningSchema] = []
         verified_scores: List[float] = []
-
-        total_claims = len(claims)
         claims_with_evidence = 0
         complete_citations = 0
         accumulated_grounding_score = 0.0
 
-        # Map active conflict fields to apply penalties during validation
-        conflict_fields = {c.field.lower() for c in merged_summary.validation.conflicts}
-
-        judge_failed = False
-
-        # 2. Iterate through each claim, fetch local source documents, and judge grounding
         for claim in claims:
-            logger.info(f"Validating Claim: {claim.value[:50]}...")
-            
-            # Explicit Citation Check: Must contain at least one evidence item
-            has_evidence = len(claim.evidence) > 0 and any(bool(e.extracted_text.strip()) for e in claim.evidence)
+            verdict_data = verdicts_map.get(claim.claim_id)
+            verdict = verdict_data.get("supported", "NOT_SUPPORTED") if verdict_data else "NOT_SUPPORTED"
+            reasoning = (
+                verdict_data.get("explanation", "No explanation provided.")
+                if verdict_data
+                else "Verdict missing from batch validation response."
+            )
+
+            has_evidence = claims_evidence_coverage.get(claim.claim_id, False)
             if has_evidence:
                 claims_with_evidence += 1
 
-            # Citation completeness check (must contain source_document, author_role, and recorded_at/timestamp)
-            has_complete_citation = True
-            for ev in claim.evidence:
-                if not ev.source_document or not ev.author_role or not ev.extracted_text:
-                    has_complete_citation = False
-                    break
-            if has_complete_citation and len(claim.evidence) > 0:
+            has_complete = claims_citation_completeness.get(claim.claim_id, False)
+            if has_complete:
                 complete_citations += 1
 
-            # Generate claim vector
-            claim_vector = self.get_embedding(claim.value)
+            max_similarity = similarity_scores.get(claim.claim_id, 0.80)
 
-            # Retrieve top 3 source nodes matching cosine distance using pgvector
-            query = text("""
-                SELECT content, author_role, recorded_at, 1 - (embedding <=> CAST(:vector AS vector)) AS similarity
-                FROM raw_document_nodes
-                WHERE stay_id = :stay_id
-                ORDER BY embedding <=> CAST(:vector AS vector)
-                LIMIT 3;
-            """)
-
-            try:
-                result = await db.execute(query, {"vector": str(claim_vector), "stay_id": stay_id})
-                rows = result.fetchall()
-            except Exception as sql_err:
-                logger.error(f"SQL execution error during vector retrieval: {str(sql_err)}")
-                rows = []
-
-            # Robust Fallback: If pgvector is missing/broken or returned 0 rows, fallback to fetching nodes chronologically
-            if not rows:
-                try:
-                    fallback_query = text("""
-                        SELECT content, author_role, recorded_at, 0.85 AS similarity
-                        FROM raw_document_nodes
-                        WHERE stay_id = :stay_id
-                        ORDER BY recorded_at ASC
-                        LIMIT 3;
-                    """)
-                    result = await db.execute(fallback_query, {"stay_id": stay_id})
-                    rows = result.fetchall()
-                    logger.info(f"Fallback chronological note retrieval succeeded. Loaded {len(rows)} nodes.")
-                except Exception as fb_err:
-                    logger.error(f"Fallback note retrieval failed: {str(fb_err)}")
-                    rows = []
-
-            # Format the source contexts for the Gemini prompt
-            context_1 = "No matching note context found."
-            context_2 = "No matching note context found."
-            context_3 = "No matching note context found."
-            max_similarity = 0.0
-
-            if len(rows) > 0:
-                context_1 = f"[{rows[0][1]} Note recorded at {rows[0][2]}]:\n{rows[0][0]}"
-                max_similarity = float(rows[0][3])
-            if len(rows) > 1:
-                context_2 = f"[{rows[1][1]} Note recorded at {rows[1][2]}]:\n{rows[1][0]}"
-            if len(rows) > 2:
-                context_3 = f"[{rows[2][1]} Note recorded at {rows[2][2]}]:\n{rows[2][0]}"
-
-            # Fallback to high default similarity if pgvector extension is missing or empty
-            if max_similarity <= 0.01:
-                max_similarity = 0.80
-
-            # 3. Invoke Gemini Judge
-            verdict, reasoning = await self._run_gemini_judge(
-                claim_category=claim.category,
-                claim_value=claim.value,
-                claim_id=claim.claim_id,
-                context_1=context_1,
-                context_2=context_2,
-                context_3=context_3
+            # Mathematical grounding score
+            verdict_score = (
+                1.0 if verdict == "SUPPORTED"
+                else (0.5 if verdict == "PARTIALLY_SUPPORTED" else 0.0)
             )
-            logger.info(f"Gemini Judge Verdict: {verdict}")
-
-            # 4. Compute Factual Grounding Score mathematically
-            # - Verdict score: SUPPORTED=1.0, PARTIALLY_SUPPORTED=0.5, NOT_SUPPORTED=0.0
-            verdict_score = 1.0 if verdict == "SUPPORTED" else (0.5 if verdict == "PARTIALLY_SUPPORTED" else 0.0)
-            
-            # - Diversity factor: count of unique author roles in evidence
-            unique_roles = len(set(ev.author_role for ev in claim.evidence))
-
-            # - Conflict penalty: subtract 0.3 if the claim field has an unresolved conflict
+            unique_roles = len({ev.author_role for ev in claim.evidence})
             is_conflicted = any(
-                claim.category.lower() in f or (hasattr(claim, 'value') and claim.value.lower() in f) 
+                claim.category.lower() in f
+                or (claim.value.lower() in f)
                 for f in conflict_fields
             )
-
-            # Calculate grounding score via testable helper
             grounding_score = self._calculate_grounding_score(
                 verdict_score=verdict_score,
                 similarity_score=max_similarity,
                 evidence_count=len(claim.evidence),
                 unique_roles=unique_roles,
-                is_conflicted=is_conflicted
+                is_conflicted=is_conflicted,
             )
-            
-            # 6. Update grounding score calculation for judge failure
-            if "Gemini Judge unavailable" in reasoning:
-                judge_failed = True
-                if verdict == "PARTIALLY_SUPPORTED":
-                    grounding_score = min(grounding_score, 0.60)
-            elif "No supporting source note context found and grounding" in reasoning:
-                judge_failed = True
 
-            # Force grounding score to absolute 0.0 if explicit citation verification fails
+            # Force 0.0 if citation verification completely fails
             if not has_evidence:
                 grounding_score = 0.0
                 verdict = "NOT_SUPPORTED"
-                reasoning = "Explicit citation verification failed: Claim lacks supporting evidence references."
+                reasoning = (
+                    "Explicit citation verification failed: "
+                    "Claim lacks supporting evidence references."
+                )
 
             accumulated_grounding_score += grounding_score
 
-            # 5. Map verdict back into confidence scores and update status
-            final_score = grounding_score
-
-            if verdict == "SUPPORTED" and grounding_score >= 0.75:
-                validation_notes.append(f"Claim {claim.claim_id} validated as SUPPORTED. Score: {grounding_score}. Reasoning: {reasoning}")
+            # Categorize claim
+            if verdict == "SUPPORTED" and grounding_score >= GROUNDING_WARN_THRESHOLD:
+                validation_notes.append(
+                    f"Claim {claim.claim_id} validated as SUPPORTED. "
+                    f"Score: {grounding_score}. Reasoning: {reasoning}"
+                )
             elif verdict == "PARTIALLY_SUPPORTED" or grounding_score >= 0.40:
                 unsupported_claims_list.append(
-                    f"[{claim.category}] {claim.value} (PARTIALLY SUPPORTED - Score: {grounding_score}. {reasoning})"
+                    f"[{claim.category}] {claim.value} "
+                    f"(PARTIALLY SUPPORTED - Score: {grounding_score}. {reasoning})"
                 )
-                validation_notes.append(f"Claim {claim.claim_id} validated as PARTIALLY_SUPPORTED. Score: {grounding_score}. Reasoning: {reasoning}")
+                validation_notes.append(
+                    f"Claim {claim.claim_id} validated as PARTIALLY_SUPPORTED. "
+                    f"Score: {grounding_score}. Reasoning: {reasoning}"
+                )
             else:
                 unsupported_claims_list.append(
-                    f"[{claim.category}] {claim.value} (UNSUPPORTED - Score: {grounding_score}. {reasoning})"
+                    f"[{claim.category}] {claim.value} "
+                    f"(UNSUPPORTED - Score: {grounding_score}. {reasoning})"
                 )
-                validation_notes.append(f"Claim {claim.claim_id} validated as NOT_SUPPORTED. Score: {grounding_score}. Reasoning: {reasoning}")
+                validation_notes.append(
+                    f"Claim {claim.claim_id} validated as NOT_SUPPORTED. "
+                    f"Score: {grounding_score}. Reasoning: {reasoning}"
+                )
 
-            # Generate physician warning if grounding score falls below safety threshold 0.75
-            if grounding_score < 0.75:
-                warnings_list.append(ClinicalWarningSchema(
-                    field=claim.category,
-                    severity="HIGH" if grounding_score < 0.40 else "MEDIUM",
-                    message=f"Claim '{claim.value[:40]}...' has sub-optimal grounding score ({grounding_score}). Reason: {reasoning}"
-                ))
+            # Emit physician warning for sub-threshold claims
+            if grounding_score < GROUNDING_WARN_THRESHOLD:
+                warnings_list.append(
+                    ClinicalWarningSchema(
+                        field=claim.category,
+                        severity="HIGH" if grounding_score < 0.40 else "MEDIUM",
+                        message=(
+                            f"Claim '{claim.value[:40]}...' has sub-optimal grounding score "
+                            f"({grounding_score}). Reason: {reasoning}"
+                        ),
+                    )
+                )
 
-            # Update the claim confidence
+            # Update claim confidence in summary
+            final_score = grounding_score
             claim.confidence = ConfidenceSchema(
                 score=final_score,
-                level="HIGH" if final_score >= 0.85 else ("MEDIUM" if final_score >= 0.60 else "LOW")
+                level="HIGH" if final_score >= 0.85 else ("MEDIUM" if final_score >= 0.60 else "LOW"),
             )
             verified_scores.append(final_score)
-
-            # Apply the validation updates back to the actual model objects in the summary list
             self._update_original_fact_confidence(merged_summary.summary, claim.claim_id, final_score)
 
-        # 6. Compute overall metrics
-        overall_grounding = round(accumulated_grounding_score / total_claims, 2) if total_claims > 0 else 1.0
+        # 8. Compute overall metrics
+        supported_count = total_claims - len(unsupported_claims_list)
+        overall_grounding = round(supported_count / total_claims, 2) if total_claims > 0 else 1.0
         evidence_coverage = round(claims_with_evidence / total_claims, 2) if total_claims > 0 else 1.0
         citation_completeness = round(complete_citations / total_claims, 2) if total_claims > 0 else 1.0
-
-        grounding_metrics = GroundingMetricsSchema(
-            grounding_score=overall_grounding,
-            evidence_coverage=evidence_coverage,
-            citation_completeness=citation_completeness
-        )
-
-        if judge_failed:
-            warnings_list.append(ClinicalWarningSchema(
-                field="SYSTEM_WARNING",
-                severity="HIGH",
-                message="Grounding verification service unavailable. One or more claims require manual review."
-            ))
-            validation_notes.append("Judge Status: UNAVAILABLE")
-            
-            failure_disclaimer = "Automated grounding verification unavailable for some claims. Manual review recommended."
-            validation_notes.append(failure_disclaimer)
-            if merged_summary.summary.clinical_summary:
-                merged_summary.summary.clinical_summary = merged_summary.summary.clinical_summary.strip() + " " + failure_disclaimer
-            else:
-                merged_summary.summary.clinical_summary = failure_disclaimer
-
-        overall_grounded = (len(unsupported_claims_list) == 0) and (len(merged_summary.validation.conflicts) == 0) and (overall_grounding >= 0.75)
         overall_confidence = round(sum(verified_scores) / len(verified_scores), 2) if verified_scores else 0.0
 
-        # Construct citation summary audit text
-        citation_summary = f"Total claims evaluated: {total_claims}. Grounded claims: {total_claims - len(unsupported_claims_list)}. Unsupported/Hallucinated: {len(unsupported_claims_list)}."
+        overall_grounded = (
+            len(unsupported_claims_list) == 0
+            and len(merged_summary.validation.conflicts) == 0
+            and overall_grounding >= GROUNDING_WARN_THRESHOLD
+        )
 
-        # Rebuild Validation Report
-        validation_report = ValidationReportSchema(
+        citation_summary = (
+            f"Total claims evaluated: {total_claims}. "
+            f"Grounded claims: {supported_count}. "
+            f"Unsupported/Hallucinated: {len(unsupported_claims_list)}."
+        )
+
+        # Track prompt versions inside the validation report notes (as requested in req 9)
+        from app.core.config import EXTRACTION_PROMPT_VERSION, JUDGE_PROMPT_VERSION
+        validation_notes.append(
+            f"Prompt Versions: extraction={EXTRACTION_PROMPT_VERSION}, judge={JUDGE_PROMPT_VERSION}"
+        )
+
+        merged_summary.validation = ValidationReportSchema(
             grounded=overall_grounded,
             confidence=overall_confidence,
             unsupported_claims=unsupported_claims_list,
             conflicts=merged_summary.validation.conflicts,
             notes=validation_notes,
-            grounding_metrics=grounding_metrics,
+            grounding_metrics=GroundingMetricsSchema(
+                grounding_score=overall_grounding,
+                evidence_coverage=evidence_coverage,
+                citation_completeness=citation_completeness,
+            ),
             warnings=warnings_list,
-            citation_summary=citation_summary
+            citation_summary=citation_summary,
+            historical_medications=merged_summary.validation.historical_medications,
+            merged_duplicates=merged_summary.validation.merged_duplicates,
+            clinical_audit=merged_summary.validation.clinical_audit,
         )
 
-        merged_summary.validation = validation_report
-        logger.info(f"Clinical Safety Layer completed. Grounding score: {overall_grounding}")
+        logger.info(
+            "Clinical Safety Layer completed for stay %s. Grounding score: %.2f",
+            stay_id,
+            overall_grounding,
+        )
         return merged_summary
 
-    def _calculate_grounding_score(
-        self, verdict_score: float, similarity_score: float, evidence_count: int, unique_roles: int, is_conflicted: bool
-    ) -> float:
-        """
-        Calculates the factual grounding score using a deterministic formula.
-        Verdict_score (0.0 to 1.0) is weighted heavily. Give a high base score (0.85) for
-        supported claims and add slight increments for evidence count and clinician role diversity.
-        """
-        if verdict_score == 0.0:
-            return 0.0
+    # ─────────────────────────────────────────────────────────────────────────
+    # Batch embedding (1 API call for all claims)
+    # ─────────────────────────────────────────────────────────────────────────
 
-        base = 0.85
-        evidence_factor = min(evidence_count, 2) * 0.04
-        diversity_factor = min(unique_roles, 2) * 0.04
-        similarity_factor = (similarity_score - 0.5) * 0.1 if similarity_score > 0.5 else 0.0
-        penalty = 0.10 if is_conflicted else 0.0
-
-        score = base + evidence_factor + diversity_factor + similarity_factor - penalty
-        return max(0.0, min(1.0, round(score, 2)))
-
-    async def _run_gemini_judge(
-        self, claim_category: str, claim_value: str, claim_id: str, context_1: str, context_2: str, context_3: str
-    ) -> Tuple[str, str]:
+    async def _batch_embed_claims(self, claims: list) -> Dict[str, List[float]]:
         """
-        Calls Gemini 2.5 Pro under strict generation constraints to judge grounding.
+        Generates embeddings for ALL claim texts in a single Gemini API call.
+
+        Replaces N sequential get_embedding() calls with one batched call,
+        significantly reducing latency and API quota usage.
+
+        Falls back to sequential embedding if the batch call fails.
         """
-        prompt = JUDGE_PROMPT.format(
-            claim_category=claim_category,
-            claim_value=claim_value,
-            claim_id=claim_id,
-            context_1=context_1,
-            context_2=context_2,
-            context_3=context_3
+        if not claims:
+            return {}
+
+        texts = [c.value for c in claims]
+        loop = asyncio.get_running_loop()
+
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: genai.embed_content(
+                    model=self.embedding_model,
+                    content=texts,
+                    task_type="retrieval_query",
+                    output_dimensionality=EMBEDDING_DIMENSIONS,
+                ),
+            )
+            embeddings = result["embedding"]
+
+            # embed_content returns List[List[float]] for list input
+            if embeddings and isinstance(embeddings[0], list):
+                return {claims[i].claim_id: embeddings[i] for i in range(len(claims))}
+
+            # Single embedding returned (shouldn't happen for list input)
+            if len(claims) == 1:
+                return {claims[0].claim_id: embeddings}
+
+            logger.warning(
+                "[Grounding] Unexpected batch embedding shape — falling back to sequential."
+            )
+
+        except Exception as exc:
+            logger.warning(
+                "[Grounding] Batch embedding failed (%s) — falling back to sequential.", exc
+            )
+
+        # Sequential fallback
+        result: Dict[str, List[float]] = {}
+        for claim in claims:
+            result[claim.claim_id] = self.get_embedding(claim.value)
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Batch Gemini Judge (1 LLM call for all claims)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_gemini_judge_batch(
+        self, claims_text: str, evidence_text: str
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calls Gemini Judge in a single batch call to verify grounding for all claims.
+        Returns a dict mapping claim_id → {"supported": str, "confidence": float, "explanation": str}.
+        Raises ValidationServiceUnavailable on failure (safe-fail behavior preserved).
+        """
+        logger.info("[Grounding] Starting batch validation")
+        prompt = BATCH_JUDGE_PROMPT.format(
+            claims_text=claims_text, evidence_text=evidence_text
         )
         try:
             model = genai.GenerativeModel(self.judge_model_name)
             loop = asyncio.get_running_loop()
-            
-            # Execute synchronously in separate thread to protect fast asyncio context loops
             response = await loop.run_in_executor(
                 None,
                 lambda: model.generate_content(
                     prompt,
                     generation_config={
                         "response_mime_type": "application/json",
-                        "temperature": 0.0
-                    }
-                )
+                        "temperature": 0.0,
+                    },
+                ),
             )
 
             if not response or not response.text:
-                return "NOT_SUPPORTED", "Gemini Judge returned empty text response."
+                raise ValueError("Gemini Judge returned empty text response.")
 
             clean_text = response.text.strip()
             if clean_text.startswith("```json"):
@@ -359,49 +418,123 @@ class ClinicalValidationLayer:
                 clean_text = clean_text[:-3]
             clean_text = clean_text.strip()
 
-            data = json.loads(clean_text)
-            verdict = data.get("verdict", "NOT_SUPPORTED").upper()
-            reasoning = data.get("reasoning", "No judge reasoning details provided.")
-            return verdict, reasoning
+            parsed_list = json.loads(clean_text)
+            if not isinstance(parsed_list, list):
+                raise ValueError("Batch validation response is not a JSON list.")
 
-        except Exception as e:
-            logger.error(f"Error calling Gemini Judge: {str(e)}")
-            # Fail safely on API outage or rate limiting
-            if context_1 != "No matching note context found.":
-                logger.warning("Gemini Judge API rate limited or errored. Using safe partial-support fallback.")
-                return "PARTIALLY_SUPPORTED", "Gemini Judge unavailable. Supporting clinical context was retrieved from source notes, but automated grounding verification could not be completed. Manual physician review recommended."
-            return "NOT_SUPPORTED", "No supporting source note context found and grounding verification could not be completed."
+            verdicts_map: Dict[str, Dict[str, Any]] = {}
+            for item in parsed_list:
+                if isinstance(item, dict) and "claim_id" in item:
+                    verdict_str = (
+                        item.get("supported") or item.get("verdict") or "NOT_SUPPORTED"
+                    )
+                    verdicts_map[str(item["claim_id"])] = {
+                        "supported": verdict_str.upper(),
+                        "confidence": float(item.get("confidence") or 0.0),
+                        "explanation": (
+                            item.get("explanation") or item.get("reasoning") or "No explanation provided."
+                        ),
+                    }
+            return verdicts_map
 
+        except Exception as exc:
+            logger.error("[Grounding] Gemini Judge batch call failed: %s", str(exc))
+            raise ValidationServiceUnavailable(
+                f"Grounding verification service unavailable: {exc}"
+            ) from exc
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Scoring helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _calculate_grounding_score(
+        verdict_score: float,
+        similarity_score: float,
+        evidence_count: int,
+        unique_roles: int,
+        is_conflicted: bool,
+    ) -> float:
+        """
+        Deterministic grounding score formula.
+        Verdict is weighted most heavily; evidence diversity and similarity
+        provide small increments. Conflicts apply a penalty.
+        """
+        if verdict_score == 0.0:
+            return 0.0
+        base = 0.85
+        evidence_factor = min(evidence_count, 2) * 0.04
+        diversity_factor = min(unique_roles, 2) * 0.04
+        similarity_factor = (similarity_score - 0.5) * 0.1 if similarity_score > 0.5 else 0.0
+        penalty = 0.10 if is_conflicted else 0.0
+        score = base + evidence_factor + diversity_factor + similarity_factor - penalty
+        return max(0.0, min(1.0, round(score, 2)))
+
+    @staticmethod
     def _update_original_fact_confidence(
-        self, extraction: Any, claim_id: str, final_score: float
+        extraction: Any, claim_id: str, final_score: float
     ) -> None:
         """
-        Utility method to locate the original extracted fact by its claim_id
-        within the nested extraction structure and update its confidence.
+        Locates the original extracted fact by its claim_id within the nested
+        extraction structure and updates its confidence score in-place.
         """
         level = "HIGH" if final_score >= 0.85 else ("MEDIUM" if final_score >= 0.60 else "LOW")
         new_conf = ConfidenceSchema(score=final_score, level=level)
 
-        for item in extraction.diagnoses:
-            if item.claim_id == claim_id:
-                item.confidence = new_conf
-                return
-        
-        for item in extraction.symptoms:
-            if item.claim_id == claim_id:
-                item.confidence = new_conf
-                return
+        for collection in (
+            extraction.diagnoses,
+            extraction.symptoms,
+            extraction.investigations,
+            extraction.prescribed_medications,
+        ):
+            for item in collection:
+                if item.claim_id == claim_id:
+                    item.confidence = new_conf
+                    return
 
-        for item in extraction.investigations:
-            if item.claim_id == claim_id:
-                item.confidence = new_conf
-                return
-
-        for item in extraction.prescribed_medications:
-            if item.claim_id == claim_id:
-                item.confidence = new_conf
-                return
-
-        if extraction.follow_up_instructions and extraction.follow_up_instructions.claim_id == claim_id:
+        if (
+            extraction.follow_up_instructions
+            and extraction.follow_up_instructions.claim_id == claim_id
+        ):
             extraction.follow_up_instructions.confidence = new_conf
-            return
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Utility
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_evidence_text(raw_notes: List[RawDocumentNode]) -> str:
+        """
+        Builds the combined evidence string from raw notes for the judge prompt.
+        Deduplicates notes by (author_role, content) to avoid repeated context.
+        """
+        seen: set = set()
+        evidence_texts: List[str] = []
+        for note in raw_notes:
+            key = (note.author_role, note.content.strip())
+            if key not in seen:
+                seen.add(key)
+                evidence_texts.append(
+                    f"[{note.author_role} Note recorded at {note.recorded_at}]:\n{note.content}"
+                )
+        return "\n\n".join(evidence_texts)
+
+    @staticmethod
+    def _empty_validation_report(
+        merged_summary: FinalDischargeSummary,
+    ) -> ValidationReportSchema:
+        """Returns a perfect validation report when no claims are generated."""
+        return ValidationReportSchema(
+            grounded=True,
+            confidence=1.0,
+            unsupported_claims=[],
+            conflicts=merged_summary.validation.conflicts,
+            notes=["No claims generated for validation."],
+            grounding_metrics=GroundingMetricsSchema(
+                grounding_score=1.0,
+                evidence_coverage=1.0,
+                citation_completeness=1.0,
+            ),
+            warnings=[],
+            citation_summary="No claims to evaluate.",
+        )

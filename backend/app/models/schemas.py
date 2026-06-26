@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -15,6 +15,7 @@ class AuthorRole(str, Enum):
     WARD_NURSE = "WARD_NURSE"
     SYSTEM = "SYSTEM"
     RECONCILED_PIPELINE = "RECONCILED_PIPELINE"
+    UNKNOWN_CLINICIAN = "UNKNOWN_CLINICIAN"
 
 
 class ConfidenceLevel(str, Enum):
@@ -436,6 +437,18 @@ class ValidationReportSchema(BaseModel):
     citation_summary: str = Field(
         default="",
         description="Textual overview audit log of citations verified"
+    )
+    historical_medications: List[MedicationSchema] = Field(
+        default_factory=list,
+        description="Historical inpatient medications excluded from discharge reconciliation"
+    )
+    merged_duplicates: List[MedicationSchema] = Field(
+        default_factory=list,
+        description="Automatically merged duplicate medications"
+    )
+    clinical_audit: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Clinical audit trail of medication reconciliation"
     )
 
 

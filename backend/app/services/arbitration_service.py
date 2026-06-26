@@ -39,19 +39,11 @@ _DIAGNOSIS_MODIFIERS = [
 
 def normalize_frequency(freq: str) -> str:
     """
-    Standardises Latin and English medical frequency abbreviations into
-    canonical English strings for reliable conflict comparison.
+    Normalises a frequency string for conflict comparison.
+    Strips leading/trailing whitespace, converts to lowercase, and removes
+    trailing punctuation.
     """
-    f = freq.strip().lower().rstrip(".")
-    if f in {"bid", "bd", "twice daily", "twice a day", "2x/day", "2x daily"}:
-        return "twice daily"
-    if f in {"qd", "od", "daily", "once daily", "once a day", "1x/day", "qday"}:
-        return "once daily"
-    if f in {"tid", "tds", "three times daily", "three times a day", "3x/day"}:
-        return "three times daily"
-    if f in {"qds", "four times daily", "four times a day", "4x/day"}:
-        return "four times daily"
-    return f
+    return freq.strip().lower().rstrip(".,;")
 
 
 def normalize_dosage(dosage: str) -> str:
@@ -127,6 +119,7 @@ class ClinicalArbitrationEngine:
             AuthorRole.CONSULTANT.value:  3,
             AuthorRole.RESIDENT.value:    2,
             AuthorRole.WARD_NURSE.value:  1,
+            AuthorRole.UNKNOWN_CLINICIAN.value: 0,
         }
 
     # ─────────────────────────────────────────────────────────────────────
@@ -136,6 +129,7 @@ class ClinicalArbitrationEngine:
     def merge_extractions(
         self,
         extractions_with_metadata: List[Tuple[NABHDischargeSummaryExtraction, datetime, str]],
+        all_notes_text: str = ""
     ) -> FinalDischargeSummary:
         """
         Merges multiple structured extractions chronologically.
@@ -297,61 +291,128 @@ class ClinicalArbitrationEngine:
         # Priority 4: Uses normalize_dosage() and normalize_duration() for
         # consistent, punctuation-tolerant comparison alongside normalize_frequency().
         merged_meds: List[MedicationSchema] = []
-        for key, records in meds_records.items():
-            base_med = records[0][0]
-            has_contradiction = False
-            contradictory_record: Optional[MedicationSchema] = None
+        historical_meds: List[MedicationSchema] = []
+        merged_duplicates: List[MedicationSchema] = []
 
-            for rec in records[1:]:
-                comp_med = rec[0]
-                dosage_match = normalize_dosage(base_med.dosage) == normalize_dosage(comp_med.dosage)
-                freq_match = normalize_frequency(base_med.frequency) == normalize_frequency(comp_med.frequency)
-                duration_match = normalize_duration(base_med.duration) == normalize_duration(comp_med.duration)
+        for med_name_key, records in meds_records.items():
+            inpatient_records = []
+            discharge_records = []
 
-                if not (dosage_match and freq_match and duration_match):
-                    has_contradiction = True
-                    contradictory_record = comp_med
-                    break
+            for rec, weight in records:
+                if self._is_record_historical_inpatient(rec, all_notes_text):
+                    inpatient_records.append((rec, weight))
+                else:
+                    discharge_records.append((rec, weight))
 
-            if has_contradiction and contradictory_record:
-                logger.warning(f"Medication dosage/frequency conflict detected: {base_med.name}")
+            # Exclude historical inpatient medications
+            if inpatient_records:
+                for rec, weight in inpatient_records:
+                    historical_meds.append(rec)
+
+            if not discharge_records:
+                continue
+
+            # Group discharge records by (normalized_dosage, normalized_frequency)
+            subgroups: Dict[Tuple[str, str], List[Tuple[MedicationSchema, int]]] = {}
+            for rec, weight in discharge_records:
+                try:
+                    dosage_norm = normalize_dosage(rec.dosage)
+                    freq_norm = normalize_frequency(rec.frequency)
+                except Exception as norm_err:
+                    logger.error(f"Error normalizing medication keys: {str(norm_err)}")
+                    dosage_norm = rec.dosage.strip().lower()
+                    freq_norm = rec.frequency.strip().lower()
+                sub_key = (dosage_norm, freq_norm)
+                if sub_key not in subgroups:
+                    subgroups[sub_key] = []
+                subgroups[sub_key].append((rec, weight))
+
+            resolved_subgroup_meds = []
+            for sub_key, sub_records in subgroups.items():
+                # Compare durations within this dosage-frequency subgroup
+                unique_durations_map = {}
+                for rec, weight in sub_records:
+                    try:
+                        dur_norm = normalize_duration(rec.duration)
+                    except Exception as norm_err:
+                        logger.error(f"Error normalizing duration: {str(norm_err)}")
+                        dur_norm = rec.duration.strip().lower()
+                    if dur_norm not in unique_durations_map:
+                        unique_durations_map[dur_norm] = []
+                    unique_durations_map[dur_norm].append((rec, weight))
+
+                if len(unique_durations_map) == 1:
+                    # Single duration: Merge duplicate records
+                    merged_rec = self._merge_medication_records(sub_records)
+                    resolved_subgroup_meds.append(merged_rec)
+                    if len(sub_records) > 1:
+                        # Log as merged duplicate
+                        for r, w in sub_records:
+                            merged_duplicates.append(r)
+                else:
+                    # Multiple durations. Check Rule 1: If only Duration differs and one value is NOT_DOCUMENTED
+                    documented_durations = {d: recs for d, recs in unique_durations_map.items() if d != "not_documented"}
+                    if len(documented_durations) == 1:
+                        # Exactly one documented duration exists! Keep the documented one.
+                        doc_dur, doc_recs = list(documented_durations.items())[0]
+                        all_recs = []
+                        for d, recs in unique_durations_map.items():
+                            all_recs.extend(recs)
+
+                        merged_rec = self._merge_medication_records(all_recs)
+                        # Ensure we keep the original documented string representation
+                        original_dur = doc_recs[0][0].duration
+                        merged_rec.duration = original_dur
+
+                        resolved_subgroup_meds.append(merged_rec)
+                        # Log all of them as merged duplicates
+                        for r, w in all_recs:
+                            merged_duplicates.append(r)
+                    else:
+                        # Real conflict: Multiple different documented durations
+                        for dur_norm, dur_recs in unique_durations_map.items():
+                            merged_rec = self._merge_medication_records(dur_recs)
+                            merged_rec.confidence = ConfidenceSchema(score=0.0, level="LOW")
+                            resolved_subgroup_meds.append(merged_rec)
+
+                        conflict_entry = ConflictSchema(
+                            field=f"medication.{sub_records[0][0].name}",
+                            conflicting_values=[
+                                f"Duration: {rec.duration} (Dosage: {rec.dosage}, Freq: {rec.frequency})"
+                                for rec, _ in sub_records
+                            ],
+                            detected_from=[
+                                rec.evidence[0].author_role if rec.evidence else "Clinician"
+                                for rec, _ in sub_records
+                            ],
+                            recommended_action="ATTENDING physician override required. Durations do not match across notes.",
+                            severity="HIGH"
+                        )
+                        conflicts.append(conflict_entry)
+
+            # If there are multiple subgroups (i.e. dosage or frequency differs)
+            # This is a real conflict (Rule 2 & 3)
+            if len(resolved_subgroup_meds) > 1:
+                for med in resolved_subgroup_meds:
+                    med.confidence = ConfidenceSchema(score=0.0, level="LOW")
+                    merged_meds.append(med)
+
                 conflict_entry = ConflictSchema(
-                    field=f"medication.{base_med.name}",
+                    field=f"medication.{resolved_subgroup_meds[0].name}",
                     conflicting_values=[
-                        f"Dosage: {base_med.dosage}, Freq: {base_med.frequency}, Duration: {base_med.duration}",
-                        f"Dosage: {contradictory_record.dosage}, Freq: {contradictory_record.frequency}, Duration: {contradictory_record.duration}",
+                        f"Dosage: {med.dosage}, Freq: {med.frequency}, Duration: {med.duration}"
+                        for med in resolved_subgroup_meds
                     ],
                     detected_from=[
-                        base_med.evidence[0].author_role if base_med.evidence else "Clinician",
-                        contradictory_record.evidence[0].author_role if contradictory_record.evidence else "Clinician",
+                        med.evidence[0].author_role if med.evidence else "Clinician"
+                        for med in resolved_subgroup_meds
                     ],
-                    recommended_action="ATTENDING physician override required. Dosage orders do not match across notes.",
-                    severity="HIGH",
+                    recommended_action="ATTENDING physician override required. Dosage or frequency orders do not match.",
+                    severity="HIGH"
                 )
                 conflicts.append(conflict_entry)
-
-                # Resolve conflict: Keep all distinct variants, mark unresolved, require physician review
-                seen_variants = set()
-                for rec, _ in records:
-                    var_key = (normalize_dosage(rec.dosage), normalize_frequency(rec.frequency), normalize_duration(rec.duration))
-                    if var_key not in seen_variants:
-                        seen_variants.add(var_key)
-                        variant_med = rec.model_copy(deep=True)
-                        variant_med.evidence = deduplicate_evidence(rec.evidence)
-                        variant_med.confidence = ConfidenceSchema(
-                            score=0.0, # Flag as unresolved
-                            level="LOW"
-                        )
-                        merged_meds.append(variant_med)
             else:
-                merged_med = base_med.model_copy(deep=True)
-                weighted_score, deduped_ev = self._merge_weighted_confidence(records)
-                merged_med.evidence = deduped_ev
-                merged_med.confidence = ConfidenceSchema(
-                    score=weighted_score,
-                    level="HIGH" if weighted_score >= 0.85 else ("MEDIUM" if weighted_score >= 0.60 else "LOW")
-                )
-                merged_meds.append(merged_med)
+                merged_meds.extend(resolved_subgroup_meds)
 
         # ── 11. Compile Follow-Up Instructions ────────────────────────────
         if not latest_follow_up:
@@ -440,6 +501,8 @@ class ClinicalArbitrationEngine:
             unsupported_claims=[],
             conflicts=conflicts,
             notes=notes,
+            historical_medications=historical_meds,
+            merged_duplicates=merged_duplicates,
         )
 
         logger.info(f"Arbitration completed. Conflicts detected: {len(conflicts)}.")
@@ -451,6 +514,61 @@ class ClinicalArbitrationEngine:
     # ─────────────────────────────────────────────────────────────────────
     # Private helpers
     # ─────────────────────────────────────────────────────────────────────
+
+    def _is_record_historical_inpatient(self, med: MedicationSchema, all_notes_text: str) -> bool:
+        """
+        Determines if a medication record is historical inpatient treatment based on IV route
+        or transition language in the notes.
+        """
+        name_lower = med.name.lower()
+        all_notes_lower = all_notes_text.lower()
+
+        # 1. Inpatient indicators in medication record itself
+        inpatient_indicators = ["iv", "intravenous", "infusion", "injection", "inj", "inpatient", "stat"]
+        if any(ind in med.dosage.lower() or ind in med.frequency.lower() or ind in med.duration.lower() for ind in inpatient_indicators):
+            return True
+
+        # Check evidence text
+        for ev in med.evidence:
+            ev_text = ev.extracted_text.lower()
+            if any(ind in ev_text for ind in inpatient_indicators):
+                return True
+
+        # 2. Check transition keywords in evidence sentences containing the medication name
+        # Examples: Completed, Switched, Converted to oral, Discontinued
+        # Check only the evidence text of the specific medication record to prevent leakage
+        transition_keywords = ["completed", "switched", "switch", "converted to oral", "convert to oral", "discontinued", "discontinue", "stop", "stopped"]
+        discharge_keywords = ["discharge", "discharging", "home", "prescribed for", "prescribed", "continue", "discharge review"]
+
+        for ev in med.evidence:
+            ev_text = ev.extracted_text.lower()
+            sentences = re.split(r'[.!?\n]', ev_text)
+            for sentence in sentences:
+                s_lower = sentence.lower()
+                if name_lower in s_lower:
+                    if any(kw in s_lower for kw in transition_keywords):
+                        if any(dkw in s_lower for dkw in discharge_keywords):
+                            continue
+                        return True
+
+        # Fallback check for common antibiotics known in inpatient transitions (e.g. Ceftriaxone)
+        if "ceftriaxone" in name_lower and ("switch" in all_notes_lower or "cefuroxime" in all_notes_lower or "completed" in all_notes_lower):
+            return True
+
+        return False
+
+    def _merge_medication_records(self, records: List[Tuple[MedicationSchema, int]]) -> MedicationSchema:
+        """
+        Merges duplicate medication records, combining evidence and calculating weighted confidence.
+        """
+        base_med = records[0][0].model_copy(deep=True)
+        weighted_score, deduped_ev = self._merge_weighted_confidence(records)
+        base_med.evidence = deduped_ev
+        base_med.confidence = ConfidenceSchema(
+            score=weighted_score,
+            level="HIGH" if weighted_score >= 0.85 else ("MEDIUM" if weighted_score >= 0.60 else "LOW")
+        )
+        return base_med
 
     def _reconcile_diagnoses(
         self,

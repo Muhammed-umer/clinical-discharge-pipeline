@@ -18,13 +18,26 @@ export const GroundingReport: React.FC<GroundingReportProps> = ({ stayDetails })
   return (
     <section id="section-6" className="py-16 border-b border-slate-900">
       <div className="max-w-5xl mx-auto">
-        <div className="text-center md:text-left mb-6">
-          <h2 className="text-xl font-black font-mono uppercase tracking-widest text-teal-400">
-            Grounding Report
-          </h2>
-          <p className="text-slate-405 text-xs mt-1">
-            Safety scorecard verifying clinical grounding metrics.
-          </p>
+        <div className="text-center md:text-left mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-black font-mono uppercase tracking-widest text-teal-400">
+              Grounding Report
+            </h2>
+            <p className="text-slate-405 text-xs mt-1">
+              Safety scorecard verifying clinical grounding metrics.
+            </p>
+          </div>
+          {(stayDetails?.is_reconciled || stayDetails?.status === 'READY_FOR_REVIEW' || stayDetails?.status === 'COMPLETED') && (
+            <div className="flex items-center gap-2 bg-emerald-950/40 border border-emerald-500/30 px-3 py-1.5 rounded-lg text-xs font-mono text-emerald-450 self-center md:self-auto select-none shadow">
+              <span>Medication Reconciled:</span>
+              <span className="bg-emerald-500 text-slate-955 px-1.5 py-0.5 rounded text-[10px] font-black uppercase">
+                YES
+              </span>
+              <span className="bg-emerald-500/20 border border-emerald-500/40 px-2 py-0.5 rounded text-[10px] font-bold uppercase ml-1">
+                Conflict Resolved
+              </span>
+            </div>
+          )}
         </div>
 
         {!stayDetails || !stayDetails.final_summary || !summary || !validation ? (

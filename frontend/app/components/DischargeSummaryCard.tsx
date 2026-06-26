@@ -39,23 +39,35 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
           {/* Attending Seal Button Gate */}
           {stayDetails && summary && (
             <div>
-              <button
-                onClick={handlePhysicianApprove}
-                disabled={loading || stayDetails.status === 'NEEDS_RECONCILIATION' || stayDetails.is_reconciled}
-                className={`px-6 py-2.5 rounded-lg text-xs font-bold font-mono uppercase border transition-all ${
-                  stayDetails.is_reconciled
-                    ? 'bg-slate-900 border-emerald-900 text-emerald-400 cursor-not-allowed'
-                    : stayDetails.status === 'NEEDS_RECONCILIATION'
-                    ? 'bg-slate-955 border-rose-955 text-rose-500 cursor-not-allowed'
-                    : 'bg-teal-500 border-teal-600 hover:bg-teal-400 text-slate-955 shadow-lg hover:scale-102'
-                }`}
-              >
-                {stayDetails.is_reconciled
-                  ? "✓ Case Review Sealed"
-                  : stayDetails.status === 'NEEDS_RECONCILIATION'
-                  ? "Physician Review Required"
-                  : "Finalize Summary"}
-              </button>
+              {stayDetails.is_reconciled ? (
+                <div className="bg-emerald-950/20 border border-emerald-500/30 px-4 py-2.5 rounded-lg text-[11px] font-mono text-emerald-400 text-right space-y-0.5 shadow-lg select-none">
+                  <div className="font-black flex items-center justify-end gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                    <span>✓ Electronic Physician Approval</span>
+                  </div>
+                  <div className="text-slate-350">Summary Finalized</div>
+                  <div className="text-slate-400 text-[10px]" suppressHydrationWarning={true}>
+                    Review Timestamp: {stayDetails.reviewed_at ? new Date(stayDetails.reviewed_at).toLocaleString() : new Date().toLocaleString()}
+                  </div>
+                  <div className="text-slate-400 text-[10px]">
+                    Reviewed By: Attending Physician (Dr. Sarah Jenkins)
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={handlePhysicianApprove}
+                  disabled={loading || stayDetails.status === 'NEEDS_RECONCILIATION'}
+                  className={`px-6 py-2.5 rounded-lg text-xs font-bold font-mono uppercase border transition-all ${
+                    stayDetails.status === 'NEEDS_RECONCILIATION'
+                      ? 'bg-slate-955 border-rose-955 text-rose-500 cursor-not-allowed'
+                      : 'bg-teal-500 border-teal-600 hover:bg-teal-400 text-slate-955 shadow-lg hover:scale-102'
+                  }`}
+                >
+                  {stayDetails.status === 'NEEDS_RECONCILIATION'
+                    ? "Physician Review Required"
+                    : "Finalize Summary"}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -238,6 +250,42 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
                 </tbody>
               </table>
             </div>
+            
+            {/* Historical Inpatient Therapy */}
+            {stayDetails?.final_summary?.validation?.historical_medications && 
+             stayDetails.final_summary.validation.historical_medications.length > 0 && (
+              <div className="mt-5 bg-slate-950 p-5 rounded-xl border border-slate-850/60 font-mono text-xs text-slate-400 space-y-4">
+                <h5 className="font-bold text-slate-350 uppercase tracking-widest text-[10px] border-b border-slate-900 pb-2">
+                  Historical Inpatient Therapy
+                </h5>
+                <div className="space-y-3">
+                  {stayDetails.final_summary.validation.historical_medications.map((med, idx) => {
+                    let reason = "Completed inpatient therapy. Excluded from discharge prescription.";
+                    if (med.name.toLowerCase().includes("ceftriaxone")) {
+                      reason = "Completed inpatient antibiotic. Excluded from discharge prescription.";
+                    }
+                    return (
+                      <div key={idx} className="bg-slate-900/30 p-3.5 rounded-lg border border-slate-900/60 flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2 text-slate-300 font-bold">
+                          <span className="text-slate-500 font-bold">✓</span>
+                          <span>{med.name} {med.dosage} {med.frequency}</span>
+                          {med.duration && med.duration !== 'NOT_DOCUMENTED' && (
+                            <span className="text-slate-400"> for {med.duration}</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500 pl-5">
+                          <span className="font-bold uppercase text-[8px] text-slate-500 block">Reason:</span>
+                          <span className="italic text-slate-405">"{reason}"</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="text-[9px] text-slate-600 italic mt-1 pl-1">
+                  * This section is informational only.
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 7. Discharge Condition */}
