@@ -1,0 +1,24 @@
+Patient Name: Muhammed Ahmed
+Patient ID: CASE-DIABETES-402
+
+Endocrinology Consultant Review
+Date: 22-Jun-2026 11:00 AM
+Author: Consultant Endocrinologist
+
+Clinical Review:
+Diabetic foot ulcer improving.
+
+Laboratory Review:
+Serum creatinine mildly elevated.
+
+Clinical Decision:
+Reduce Metformin dosage because of renal function.
+
+Recommendations:
+- Metformin 500 mg once daily
+- Discontinue NSAIDs
+- Continue wound care
+- Monitor renal function
+
+Assessment:
+Patient clinically stable for discharge after medication adjustment.

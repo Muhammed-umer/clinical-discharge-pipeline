@@ -1,0 +1,16 @@
+Patient Name: Margaret Wilson
+Patient ID: CASE-STROKE-781
+
+Ward Progress Note
+Date: 23-Jun-2026 03:40 PM
+Author: Ward Nurse
+
+Clinical Progress:
+Patient discharged home with family.
+
+Education:
+Medication adherence counseling completed.
+
+Physiotherapy advice explained to family.
+
+Patient left ward in stable condition.

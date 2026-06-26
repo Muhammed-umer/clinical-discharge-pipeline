@@ -1,0 +1,21 @@
+Patient Name: Muhammed Ahmed
+Patient ID: CASE-DIABETES-402
+
+Attending Physician Discharge Draft
+Date: 23-Jun-2026 04:00 PM
+Author: Attending Physician
+
+Hospital Course:
+Diabetic foot ulcer improving with treatment.
+
+Discharge Medications:
+Metformin 500 mg BD
+
+Condition at Discharge:
+Stable.
+
+Follow-up:
+Review in Diabetes Outpatient Clinic after 14 days.
+
+Discharging Physician:
+Dr. Sarah Jenkins

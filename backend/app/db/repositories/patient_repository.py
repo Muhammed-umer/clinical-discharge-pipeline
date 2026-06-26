@@ -68,3 +68,17 @@ class PatientRepository:
         if stay:
             stay.status = status
             logger.info("PatientStay %s status → %s", stay_id, status)
+
+    async def delete(self, db: AsyncSession, stay_id: str) -> bool:
+        """
+        Deletes the PatientStay. All associated records (notes, claims,
+        validation reports, final summary) are deleted automatically via cascade.
+        """
+        stay = await self.get_by_id(db, stay_id)
+        if stay:
+            await db.delete(stay)
+            await db.flush()
+            logger.info("Deleted PatientStay and cascaded: %s", stay_id)
+            return True
+        return False
+

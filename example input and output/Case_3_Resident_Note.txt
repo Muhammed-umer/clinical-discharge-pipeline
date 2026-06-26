@@ -1,0 +1,18 @@
+Patient Name: Margaret Wilson
+Patient ID: CASE-STROKE-781
+
+Resident Admission Note
+Date: 21-Jun-2026 08:30 AM
+Author: Resident Medical Officer
+
+Chief Complaint:
+Sudden onset left-sided weakness and slurred speech.
+
+Investigation:
+CT Brain confirms acute ischemic stroke.
+
+Treatment Initiated:
+Aspirin 150 mg once daily.
+
+Initial Assessment:
+Acute ischemic stroke.

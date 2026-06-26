@@ -6,9 +6,10 @@ interface DetectedConflictsProps {
   stayDetails: StayDetails | null;
   showResolveEditor: boolean;
   setShowResolveEditor: (val: boolean) => void;
-  resolvedMeds: Array<{ name: string; dosage: string; frequency: string; duration: string }>;
+  resolvedMeds: Array<{ name: string; dosage: string; frequency: string; duration: string; discarded?: boolean; hasConflict?: boolean }>;
   handleReconcileConflict: (e: React.FormEvent) => void;
   handleMedResolutionChange: (index: number, field: string, value: string) => void;
+  handleToggleKeep: (selectedIndex: number) => void;
   loading: boolean;
 }
 
@@ -19,11 +20,22 @@ export const DetectedConflicts: React.FC<DetectedConflictsProps> = ({
   resolvedMeds,
   handleReconcileConflict,
   handleMedResolutionChange,
+  handleToggleKeep,
   loading
 }) => {
   const conflicts = stayDetails?.final_summary?.validation?.conflicts || [];
   const historicalMeds = stayDetails?.final_summary?.validation?.historical_medications || [];
   const mergedDuplicates = stayDetails?.final_summary?.validation?.merged_duplicates || [];
+
+  // Group resolvedMeds by name
+  const groupedMeds: { [key: string]: Array<{ name: string; dosage: string; frequency: string; duration: string; discarded?: boolean; hasConflict?: boolean; originalIndex: number }> } = {};
+  resolvedMeds.forEach((med, idx) => {
+    const name = med.name.trim();
+    if (!groupedMeds[name]) {
+      groupedMeds[name] = [];
+    }
+    groupedMeds[name].push({ ...med, originalIndex: idx });
+  });
 
   return (
     <section id="section-5" className="py-16 border-b border-slate-900 bg-slate-900/10">
@@ -202,61 +214,176 @@ export const DetectedConflicts: React.FC<DetectedConflictsProps> = ({
                     Final Discharge Prescription
                   </h4>
                   
-                  <div className="space-y-3">
-                    {resolvedMeds.map((med, index) => {
+                  <div className="space-y-4">
+                    {Object.entries(groupedMeds).map(([medName, items]) => {
+                      if (items.length === 1) {
+                        const item = items[0];
+                        const matchingConflict = conflicts.find(c => 
+                          c.field.toLowerCase().includes(item.name.toLowerCase())
+                        );
+                        const reasonForSelection = matchingConflict 
+                          ? matchingConflict.recommended_action 
+                          : "Standard discharge prescription.";
+
+                        return (
+                          <div key={item.originalIndex} className="grid grid-cols-1 md:grid-cols-5 gap-2.5 bg-slate-955 p-3 rounded-lg border border-slate-900">
+                            <div>
+                              <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Medication</label>
+                              <input
+                                type="text"
+                                value={item.name}
+                                onChange={(e) => handleMedResolutionChange(item.originalIndex, "name", e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Dosage</label>
+                              <input
+                                type="text"
+                                value={item.dosage}
+                                onChange={(e) => handleMedResolutionChange(item.originalIndex, "dosage", e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Frequency</label>
+                              <input
+                                type="text"
+                                value={item.frequency}
+                                onChange={(e) => handleMedResolutionChange(item.originalIndex, "frequency", e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Duration</label>
+                              <input
+                                type="text"
+                                value={item.duration === 'NOT_DOCUMENTED' ? 'Not Documented' : item.duration}
+                                onChange={(e) => handleMedResolutionChange(item.originalIndex, "duration", e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Reason for selection</label>
+                              <input
+                                type="text"
+                                readOnly
+                                value={reasonForSelection}
+                                className="w-full bg-slate-900/50 border border-slate-800/80 rounded p-1.5 text-xs text-slate-400 font-mono cursor-not-allowed"
+                              />
+                            </div>
+                          </div>
+                        );
+                      }
+
                       const matchingConflict = conflicts.find(c => 
-                        c.field.toLowerCase().includes(med.name.toLowerCase())
+                        c.field.toLowerCase().includes(medName.toLowerCase())
                       );
                       const reasonForSelection = matchingConflict 
                         ? matchingConflict.recommended_action 
-                        : "Standard discharge prescription.";
+                        : "Attending physician resolved prescribing variation conflict.";
 
                       return (
-                        <div key={index} className="grid grid-cols-1 md:grid-cols-5 gap-2.5 bg-slate-955 p-3 rounded-lg border border-slate-900">
-                          <div>
-                            <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Medication</label>
-                            <input
-                              type="text"
-                              value={med.name}
-                              onChange={(e) => handleMedResolutionChange(index, "name", e.target.value)}
-                              className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
-                            />
+                        <div key={medName} className="bg-slate-900/40 border border-slate-850 p-4 rounded-xl space-y-3 avoid-page-break">
+                          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2">
+                            <span className="font-bold text-xs text-teal-400 font-mono uppercase tracking-wider">
+                              ⚠️ Medication Conflict: {medName}
+                            </span>
+                            <span className="text-[10px] text-slate-500 italic">
+                              Choose one correct regimen to KEEP. Others will be discarded.
+                            </span>
                           </div>
-                          <div>
-                            <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Dosage</label>
-                            <input
-                              type="text"
-                              value={med.dosage}
-                              onChange={(e) => handleMedResolutionChange(index, "dosage", e.target.value)}
-                              className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Frequency</label>
-                            <input
-                              type="text"
-                              value={med.frequency}
-                              onChange={(e) => handleMedResolutionChange(index, "frequency", e.target.value)}
-                              className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Duration</label>
-                            <input
-                              type="text"
-                              value={med.duration}
-                              onChange={(e) => handleMedResolutionChange(index, "duration", e.target.value)}
-                              className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Reason for selection</label>
-                            <input
-                              type="text"
-                              readOnly
-                              value={reasonForSelection}
-                              className="w-full bg-slate-900/50 border border-slate-800/80 rounded p-1.5 text-xs text-slate-400 font-mono cursor-not-allowed"
-                            />
+
+                          <div className="space-y-2">
+                            {items.map((item) => {
+                              const isKept = !item.discarded;
+                              return (
+                                <div 
+                                  key={item.originalIndex} 
+                                  className={`grid grid-cols-1 md:grid-cols-12 gap-2.5 p-3 rounded-lg border transition-all ${
+                                    isKept 
+                                      ? 'bg-slate-955 border-slate-800 shadow-md' 
+                                      : 'bg-slate-950/40 border-slate-900/40 opacity-50'
+                                  }`}
+                                >
+                                  {/* Keep / Discard selector (Radio) */}
+                                  <div className="md:col-span-2 flex items-center gap-2 font-mono">
+                                    <input
+                                      type="radio"
+                                      id={`keep-${item.originalIndex}`}
+                                      name={`group-${medName}`}
+                                      checked={isKept}
+                                      onChange={() => handleToggleKeep(item.originalIndex)}
+                                      className="w-3.5 h-3.5 accent-teal-500 cursor-pointer"
+                                    />
+                                    <label 
+                                      htmlFor={`keep-${item.originalIndex}`}
+                                      className={`text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none ${
+                                        isKept ? 'text-teal-400 font-black' : 'text-slate-500'
+                                      }`}
+                                    >
+                                      {isKept ? '✓ Keep' : 'Exclude'}
+                                    </label>
+                                  </div>
+
+                                  {/* Inputs */}
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Medication</label>
+                                    <input
+                                      type="text"
+                                      readOnly
+                                      value={item.name}
+                                      className="w-full bg-slate-900/50 border border-slate-900 rounded p-1.5 text-xs text-slate-400 font-mono cursor-not-allowed"
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Dosage</label>
+                                    <input
+                                      type="text"
+                                      value={item.dosage}
+                                      disabled={!isKept}
+                                      onChange={(e) => handleMedResolutionChange(item.originalIndex, "dosage", e.target.value)}
+                                      className={`w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs font-mono transition-all ${
+                                        isKept ? 'text-slate-200 border-slate-800' : 'text-slate-500 border-slate-900/50 cursor-not-allowed'
+                                      }`}
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Frequency</label>
+                                    <input
+                                      type="text"
+                                      value={item.frequency}
+                                      disabled={!isKept}
+                                      onChange={(e) => handleMedResolutionChange(item.originalIndex, "frequency", e.target.value)}
+                                      className={`w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs font-mono transition-all ${
+                                        isKept ? 'text-slate-200 border-slate-800' : 'text-slate-500 border-slate-900/50 cursor-not-allowed'
+                                      }`}
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Duration</label>
+                                    <input
+                                      type="text"
+                                      value={item.duration === 'NOT_DOCUMENTED' ? 'Not Documented' : item.duration}
+                                      disabled={!isKept}
+                                      onChange={(e) => handleMedResolutionChange(item.originalIndex, "duration", e.target.value)}
+                                      className={`w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs font-mono transition-all ${
+                                        isKept ? 'text-slate-200 border-slate-800' : 'text-slate-500 border-slate-900/50 cursor-not-allowed'
+                                      }`}
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[9px] font-mono text-slate-500 uppercase mb-1">Reason</label>
+                                    <input
+                                      type="text"
+                                      readOnly
+                                      value={reasonForSelection}
+                                      className="w-full bg-slate-900/30 border border-slate-900/50 rounded p-1.5 text-xs text-slate-500 font-mono cursor-not-allowed"
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       );

@@ -1,0 +1,16 @@
+Patient Name: Margaret Wilson
+Patient ID: CASE-STROKE-781
+
+Neurology Consultant Review
+Date: 22-Jun-2026 11:20 AM
+Author: Consultant Neurologist
+
+Clinical Progress:
+Motor power improving.
+
+Recommendations:
+- Continue Aspirin 150 mg daily
+- Begin physiotherapy
+
+Clinical Status:
+Patient clinically stable.

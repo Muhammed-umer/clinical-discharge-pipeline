@@ -165,12 +165,38 @@ export default function Home() {
 
         // Pre-populate medication reconciliation form
         if (data.final_summary?.summary?.prescribed_medications) {
-          const initialMeds = data.final_summary.summary.prescribed_medications.map((m: any) => ({
-            name: m.name.replace(" (DISCREPANCY)", ""),
-            dosage: m.dosage,
-            frequency: m.frequency,
-            duration: m.duration
-          }));
+          const nameCounts: { [key: string]: number } = {};
+          data.final_summary.summary.prescribed_medications.forEach((m: any) => {
+            const name = m.name.replace(" (DISCREPANCY)", "").trim();
+            nameCounts[name] = (nameCounts[name] || 0) + 1;
+          });
+
+          const initialMeds = data.final_summary.summary.prescribed_medications.map((m: any) => {
+            const name = m.name.replace(" (DISCREPANCY)", "").trim();
+            const hasConflict = nameCounts[name] > 1;
+            return {
+              name: name,
+              dosage: m.dosage,
+              frequency: m.frequency,
+              duration: m.duration,
+              discarded: false,
+              hasConflict
+            };
+          });
+
+          // Default to keeping only the first one of any duplicate group
+          const seenNames = new Set<string>();
+          initialMeds.forEach((m: any) => {
+            if (m.hasConflict) {
+              if (seenNames.has(m.name)) {
+                m.discarded = true;
+              } else {
+                seenNames.add(m.name);
+                m.discarded = false;
+              }
+            }
+          });
+
           setResolvedMeds(initialMeds);
         }
       }
@@ -337,10 +363,23 @@ export default function Home() {
 
     resetPipelineState();
     setLoading(true);
+    
+    if (selectedCaseId) {
+      setStatusMessage("Resetting clinical records database for this stay...");
+      try {
+        await fetch(`${API_BASE_URL}/api/pipeline/reset/${selectedCaseId}`, {
+          method: 'POST'
+        });
+      } catch (err) {
+        console.warn("Failed to reset stay state:", err);
+      }
+    }
+
     setStatusMessage("Finding supporting evidence and uploading note timelines...");
     
     let uploadedCount = 0;
     const updatedDocs = [...pendingDocuments];
+
 
     for (let i = 0; i < updatedDocs.length; i++) {
       const doc = updatedDocs[i];
@@ -525,10 +564,17 @@ export default function Home() {
       // Step 2: Updating discharge summary... (Start API call)
       setStatusMessage(steps[1]);
       
+      const keptMeds = resolvedMeds.filter((m: any) => !m.discarded).map((m: any) => ({
+        name: m.name,
+        dosage: m.dosage,
+        frequency: m.frequency,
+        duration: m.duration
+      }));
+      
       const response = await fetch(`${API_BASE_URL}/api/pipeline/resolve/${selectedCaseId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ medications: resolvedMeds })
+        body: JSON.stringify({ medications: keptMeds })
       });
 
       if (!response.ok) {
@@ -562,6 +608,17 @@ export default function Home() {
   const handleMedResolutionChange = (index: number, field: string, value: string) => {
     const updated = [...resolvedMeds];
     updated[index] = { ...updated[index], [field]: value };
+    setResolvedMeds(updated);
+  };
+
+  const handleToggleKeep = (selectedIndex: number) => {
+    const selectedMed = resolvedMeds[selectedIndex];
+    const updated = resolvedMeds.map((m: any, idx: number) => {
+      if (m.name === selectedMed.name) {
+        return { ...m, discarded: idx !== selectedIndex };
+      }
+      return m;
+    });
     setResolvedMeds(updated);
   };
 
@@ -845,6 +902,14 @@ export default function Home() {
           break-inside: avoid;
           page-break-inside: avoid;
         }
+
+        /* Disable rotation and pulsing animation in PDF clone */
+        #printable-discharge-report .animate-pulse {
+          animation: none !important;
+        }
+        #printable-discharge-report .rotate-\[-2deg\] {
+          transform: none !important;
+        }
       ` }} />
 
       {/* SECTION 1: HERO */}
@@ -903,6 +968,7 @@ export default function Home() {
           resolvedMeds={resolvedMeds}
           handleReconcileConflict={handleReconcileConflict}
           handleMedResolutionChange={handleMedResolutionChange}
+          handleToggleKeep={handleToggleKeep}
           loading={loading}
         />
       )}

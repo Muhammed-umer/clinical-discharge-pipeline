@@ -22,6 +22,17 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
     );
   };
 
+  const getAdmissionReason = () => {
+    const reason = summary?.admission_details?.reason_for_admission;
+    if (!reason || reason.trim().toUpperCase() === 'NOT_DOCUMENTED' || reason.trim().toUpperCase() === 'NOT DOCUMENTED') {
+      const primaryDiag = summary?.diagnoses?.[0]?.diagnosis;
+      if (primaryDiag) {
+        return primaryDiag.split(': ').pop();
+      }
+    }
+    return reason;
+  };
+
   return (
     <section id="section-7" className="py-16 border-b border-slate-900 bg-slate-900/20">
       <div className="max-w-5xl mx-auto">
@@ -86,7 +97,7 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
               <h2 className="text-base font-black text-slate-100 uppercase tracking-widest font-sans">
                 METROPOLITAN CLINICAL MEDICAL CENTER
               </h2>
-              <p className="text-[10px] text-slate-500 font-bold uppercase mt-0.5">
+              <p className="text-[10px] text-slate-505 font-bold uppercase mt-0.5">
                 Department of Internal Medicine | Electronic Health Records Index
               </p>
             </div>
@@ -102,19 +113,19 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
               <div>
                 <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Patient Name</div>
                 <div className="font-black text-slate-100 text-sm mt-1">
-                  <MissingInfoIndicator value={summary.patient_details.name} />
+                  <MissingInfoIndicator value={summary.patient_details.name} type="patient" />
                 </div>
               </div>
               <div>
                 <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Age / Gender</div>
                 <div className="font-bold text-slate-200 mt-1">
-                  <MissingInfoIndicator value={summary.patient_details.age_sex} />
+                  <MissingInfoIndicator value={summary.patient_details.age_sex} type="patient" />
                 </div>
               </div>
               <div>
                 <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Discharging Physician</div>
                 <div className="font-bold text-teal-400 mt-1">
-                  <MissingInfoIndicator value={summary.discharging_physician_name} />
+                  <MissingInfoIndicator value={summary.discharging_physician_name} type="patient" />
                 </div>
               </div>
             </div>
@@ -124,16 +135,16 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
                 <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Date of Admission</div>
                 <div className="font-bold text-slate-300 mt-1" suppressHydrationWarning={true}>
                   {summary.patient_details.date_of_admission 
-                    ? <MissingInfoIndicator value={new Date(summary.patient_details.date_of_admission).toLocaleDateString()} />
-                    : <MissingInfoIndicator value="NOT_DOCUMENTED" />}
+                    ? <MissingInfoIndicator value={new Date(summary.patient_details.date_of_admission).toLocaleDateString()} type="patient" />
+                    : <MissingInfoIndicator value="NOT_DOCUMENTED" type="patient" />}
                 </div>
               </div>
               <div>
                 <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Date of Discharge</div>
                 <div className="font-bold text-slate-300 mt-1" suppressHydrationWarning={true}>
                   {summary.patient_details.date_of_discharge 
-                    ? <MissingInfoIndicator value={new Date(summary.patient_details.date_of_discharge).toLocaleDateString()} />
-                    : <MissingInfoIndicator value="NOT_DOCUMENTED" />}
+                    ? <MissingInfoIndicator value={new Date(summary.patient_details.date_of_discharge).toLocaleDateString()} type="patient" />
+                    : <MissingInfoIndicator value="NOT_DOCUMENTED" type="patient" />}
                 </div>
               </div>
             </div>
@@ -145,7 +156,7 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
               <span>1. Admission Reason & Chief Presentation</span>
             </h4>
             <p className="text-slate-300 bg-slate-950 p-4 rounded-xl border border-slate-900 leading-relaxed">
-              <MissingInfoIndicator value={summary.admission_details.reason_for_admission} /> (Admission Mode: <MissingInfoIndicator value={summary.admission_details.mode_of_admission} />)
+              <MissingInfoIndicator value={getAdmissionReason()} /> (Admission Mode: <MissingInfoIndicator value={summary.admission_details.mode_of_admission} />)
             </p>
           </div>
 
@@ -199,14 +210,12 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* 5. Treatment Provided */}
+          </div>          {/* 5. Treatment Provided */}
           <div className="space-y-2">
             <h4 className="font-bold text-teal-400 border-b border-slate-800 pb-2 flex justify-between items-center text-xs uppercase tracking-widest font-sans">
               <span>5. Clinical Treatment & Interventions</span>
             </h4>
-            <p className="text-slate-300 bg-slate-950 p-4 rounded-xl border border-slate-900 leading-relaxed">
+            <p className="text-slate-300 bg-slate-955 p-4 rounded-xl border border-slate-900 leading-relaxed whitespace-pre-line">
               <MissingInfoIndicator value={summary.treatment_provided} />
             </p>
           </div>
@@ -224,6 +233,7 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
                     <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Dosage</th>
                     <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Frequency</th>
                     <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Duration</th>
+                    <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-900 text-slate-300">
@@ -231,19 +241,23 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
                     const isConflicting = isMedConflicting(med.name);
                     return (
                       <tr key={i} className={`hover:bg-slate-800/40 transition-colors ${i % 2 === 0 ? 'bg-slate-950' : 'bg-slate-900/30'} ${isConflicting ? 'border-l-[4px] border-l-rose-500 bg-rose-500/5 hover:bg-rose-500/10' : ''}`}>
-                        <td className="p-3 font-bold text-slate-200">
-                          <div className="flex flex-col gap-1">
-                            <span><MissingInfoIndicator value={med.name} /></span>
-                            {isConflicting && (
-                              <span className="inline-flex items-center gap-1 self-start bg-rose-500/10 text-rose-455 border border-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider font-bold">
-                                ⚠️ Physician Review Required
-                              </span>
-                            )}
-                          </div>
+                        <td className="p-3 font-bold text-slate-205">
+                          <MissingInfoIndicator value={med.name} />
                         </td>
                         <td className="p-3 text-slate-300"><MissingInfoIndicator value={med.dosage} /></td>
                         <td className="p-3 text-slate-300"><MissingInfoIndicator value={med.frequency} /></td>
                         <td className="p-3 text-slate-300"><MissingInfoIndicator value={med.duration} /></td>
+                        <td className="p-3 text-slate-300">
+                          {isConflicting ? (
+                            <span className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/25 px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider font-bold">
+                              Pending Physician Review
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider font-bold">
+                              Active / Verified
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
@@ -303,18 +317,18 @@ export const DischargeSummaryCard: React.FC<DischargeSummaryCardProps> = ({
             <h4 className="font-bold text-teal-400 border-b border-slate-800 pb-2 flex justify-between items-center text-xs uppercase tracking-widest font-sans">
               <span>8. Outpatient Follow-up Instructions</span>
             </h4>
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-900 space-y-3">
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-900 space-y-4">
               <div>
-                <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Recommended Consultations</span>
-                <span className="text-slate-200 font-bold mt-1 block"><MissingInfoIndicator value={summary.follow_up_instructions.recommended_follow_up} /></span>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1">Recommended Follow-up</div>
+                <div className="text-slate-200 font-bold"><MissingInfoIndicator value={summary.follow_up_instructions.recommended_follow_up} /></div>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Target Timeline</span>
-                <span className="text-slate-200 font-bold mt-1 block"><MissingInfoIndicator value={summary.follow_up_instructions.next_follow_up_date} /></span>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1">Target Timeline</div>
+                <div className="text-slate-200 font-bold"><MissingInfoIndicator value={summary.follow_up_instructions.next_follow_up_date} /></div>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">Dietary & lifestyle Advice</span>
-                <span className="text-slate-300 leading-relaxed mt-1 block"><MissingInfoIndicator value={summary.follow_up_instructions.lifestyle_dietary_instructions} /></span>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1">Lifestyle Advice</div>
+                <div className="text-slate-300 leading-relaxed"><MissingInfoIndicator value={summary.follow_up_instructions.lifestyle_dietary_instructions} /></div>
               </div>
             </div>
           </div>

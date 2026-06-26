@@ -97,6 +97,31 @@ export const GroundingReport: React.FC<GroundingReportProps> = ({ stayDetails })
               </div>
             </div>
 
+            {summary.missing_information.length > 0 && (
+              <div className="bg-amber-500/5 border border-amber-500/20 p-4 rounded-xl text-xs font-mono mt-4 space-y-3">
+                <h4 className="font-bold text-amber-400 uppercase tracking-widest text-[10px] border-b border-slate-900/50 pb-2">
+                  Identified Gaps / Missing Information Details
+                </h4>
+                <div className="divide-y divide-slate-800/40 space-y-2.5">
+                  {summary.missing_information.map((field, idx) => (
+                    <div key={idx} className="pt-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 first:pt-0">
+                      <div>
+                        <span className="font-bold text-slate-100 uppercase tracking-wider text-[9px] bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 mr-2">
+                          {field.field_name.replace("patient_details.", "").replace("medication.", "")}
+                        </span>
+                        <span className="text-slate-300">{field.reason}</span>
+                      </div>
+                      {field.requires_physician_review && (
+                        <span className="text-[9px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded uppercase font-bold self-start sm:self-auto select-none">
+                          Attending Review Required
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
           </div>
 
           {/* Checklist */}

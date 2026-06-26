@@ -108,3 +108,17 @@ async def resolve_conflicts(
         for med in payload.medications
     ]
     return await svc.resolve_conflicts(stay_id, resolved, db)
+
+
+@router.post("/pipeline/reset/{stay_id}")
+async def reset_stay(
+    stay_id: str,
+    db: AsyncSession = Depends(get_db),
+    svc: PipelineService = Depends(get_pipeline_service),
+):
+    """
+    Resets the database state for a patient stay.
+    """
+    await svc.reset_stay(stay_id, db)
+    return {"status": "success", "message": f"Stay {stay_id} has been successfully reset."}
+

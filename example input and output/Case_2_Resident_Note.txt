@@ -1,0 +1,26 @@
+Patient Name: Muhammed Ahmed
+Patient ID: CASE-DIABETES-402
+
+Resident Admission Note
+Date: 21-Jun-2026 10:00 AM
+Author: Resident Medical Officer
+
+Chief Complaint:
+Painful diabetic foot ulcer over the left foot.
+
+History:
+Known case of Type-2 Diabetes Mellitus.
+
+Clinical Assessment:
+Patient admitted for management of infected diabetic foot ulcer.
+
+Treatment Initiated:
+- Metformin 500 mg BID
+- Wound dressing initiated
+- Blood glucose monitoring advised
+
+Discharge Recommendation:
+Continue Metformin 500 mg BID.
+
+Status:
+Patient clinically stable.

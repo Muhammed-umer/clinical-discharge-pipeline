@@ -564,15 +564,28 @@ class PipelineService:
             raise
         except Exception as exc:
             await db.rollback()
-            logger.error("Approval endpoint failed: %s", str(exc))
             raise HTTPException(
                 status_code=500,
                 detail="Database write error occurred during manual approval.",
             )
 
+    async def reset_stay(self, stay_id: str, db: AsyncSession) -> None:
+        """
+        Completely deletes/resets a patient stay from the database.
+        """
+        try:
+            logger.info("Resetting/deleting stay: %s", stay_id)
+            await self._patient_repo.delete(db, stay_id)
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            logger.error("Failed to reset stay: %s", str(exc))
+            raise DatabaseUnavailable("Database error occurred while resetting stay.")
+
     # ─────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ─────────────────────────────────────────────────────────────────────────
+
 
     @staticmethod
     def _normalize_author_role(author_role: str) -> str:

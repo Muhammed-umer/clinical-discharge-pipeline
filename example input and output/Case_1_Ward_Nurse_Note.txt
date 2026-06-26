@@ -1,0 +1,15 @@
+Patient: Robert Harrison
+
+Ward Nurse Progress Note
+Date: 23-Jun-2026 09:15
+
+Patient completed Ceftriaxone IV therapy.
+
+Patient ambulatory.
+
+Tolerating oral diet.
+
+Patient educated regarding oral Cefuroxime 500 mg twice daily and follow-up clinic review.
+
+Discharging Physician:
+Dr. Robert Chen

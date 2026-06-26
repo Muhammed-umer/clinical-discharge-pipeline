@@ -445,6 +445,27 @@ class ClinicalArbitrationEngine:
 
         # ── 13. Evaluate Missing Critical Fields ──────────────────────────
         missing_fields: List[MissingFieldSchema] = []
+        
+        # Check patient demographics
+        if not merged_patient.age_sex or merged_patient.age_sex == "NOT_DOCUMENTED" or merged_patient.age_sex == "NOT DOCUMENTED":
+            missing_fields.append(MissingFieldSchema(
+                field_name="patient_details.age_sex",
+                reason="Patient age and gender was not recorded in any notes.",
+                requires_physician_review=True,
+            ))
+        if not merged_patient.date_of_admission:
+            missing_fields.append(MissingFieldSchema(
+                field_name="patient_details.date_of_admission",
+                reason="Admission date is missing from clinical documentation.",
+                requires_physician_review=True,
+            ))
+        if not merged_patient.date_of_discharge:
+            missing_fields.append(MissingFieldSchema(
+                field_name="patient_details.date_of_discharge",
+                reason="Discharge date is missing from clinical documentation.",
+                requires_physician_review=True,
+            ))
+
         if latest_discharge_condition == "NOT_DOCUMENTED":
             missing_fields.append(MissingFieldSchema(
                 field_name="discharge_condition",
@@ -718,14 +739,6 @@ class ClinicalArbitrationEngine:
 
         (Priority 15)
         """
-        # Build medication sentence from actual prescribed medications
-        med_sentences: List[str] = []
-        for med in merged_meds:
-            med_sentences.append(
-                f"{med.name} {med.dosage} {med.frequency}"
-                + (f" for {med.duration}" if med.duration != "NOT_DOCUMENTED" else "")
-            )
-
         # Collect unique sentences from raw treatment notes
         seen: set = set()
         raw_treatment_sentences: List[str] = []
@@ -739,17 +752,42 @@ class ClinicalArbitrationEngine:
                         seen.add(s_lower)
                         raw_treatment_sentences.append(s)
 
-        if med_sentences and raw_treatment_sentences:
-            return (
-                f"Pharmacotherapy included: {'; '.join(med_sentences)}. "
-                + ". ".join(raw_treatment_sentences) + "."
-            )
-        elif med_sentences:
-            return f"Pharmacotherapy included: {'; '.join(med_sentences)}."
-        elif raw_treatment_sentences:
-            return ". ".join(raw_treatment_sentences) + "."
-        else:
-            return "Provided standard supportive care and clinical management as documented in clinician notes."
+        # Build medication sentences from actual prescribed medications
+        med_sentences: List[str] = []
+        for med in merged_meds:
+            action_prefix = ""
+            if med.evidence:
+                ev_text = med.evidence[0].extracted_text.lower()
+                if "started" in ev_text:
+                    action_prefix = "Started "
+                elif "adjust" in ev_text or "change" in ev_text:
+                    action_prefix = "Adjusted to "
+                elif "discharge" in ev_text:
+                    action_prefix = "Discharge on "
+            
+            med_str = f"{action_prefix}{med.name} {med.dosage} {med.frequency}"
+            if med.duration != "NOT_DOCUMENTED":
+                med_str += f" for {med.duration}"
+            med_sentences.append(med_str)
+
+        lines = []
+        if med_sentences:
+            lines.append("Pharmacotherapy:")
+            for med_s in med_sentences:
+                lines.append(f"• {med_s}")
+        if raw_treatment_sentences:
+            if not med_sentences:
+                lines.append("Treatment Interventions:")
+            for raw_s in raw_treatment_sentences:
+                if raw_s:
+                    cap_s = raw_s[0].upper() + raw_s[1:]
+                else:
+                    cap_s = raw_s
+                lines.append(f"• {cap_s}")
+
+        if lines:
+            return "\n".join(lines)
+        return "Provided standard supportive care and clinical management as documented in clinician notes."
 
     def _merge_weighted_confidence(
         self, records: List[Tuple[Any, int]]

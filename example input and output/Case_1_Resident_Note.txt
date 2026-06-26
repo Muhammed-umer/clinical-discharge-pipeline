@@ -1,0 +1,13 @@
+Patient: Robert Harrison
+
+Resident Admission Note
+Date: 21-Jun-2026 08:00
+
+Patient admitted with fever (102°F), productive cough, and shortness of breath.
+
+Chest X-ray confirms right lower lobe lobar consolidation.
+
+Started on Ceftriaxone 1 g IV once daily.
+
+Discharging Physician:
+Dr. Robert Chen

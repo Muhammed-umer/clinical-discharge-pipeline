@@ -1,0 +1,12 @@
+Patient: Robert Harrison
+
+Pulmonology Consultant Note
+Date: 22-Jun-2026 14:30
+
+Patient responding well to intravenous Ceftriaxone.
+
+Right lower lobe pneumonia resolving.
+
+Recommend switching to oral Cefuroxime 500 mg twice daily on discharge to complete a 5-day course.
+
+Outpatient pulmonary follow-up in 10 days.
